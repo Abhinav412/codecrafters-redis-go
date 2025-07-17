@@ -7,11 +7,17 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Ensures gofmt doesn't remove the "net" and "os" imports in stage 1 (feel free to remove this!)
 var _ = net.Listen
 var _ = os.Exit
+
+var (
+	store = make(map[string]string)
+	mutex = sync.RWMutex{}
+)
 
 func main() {
 	fmt.Println("Logs from your program will appear here!")
@@ -56,6 +62,36 @@ func handleClient(conn net.Conn) {
 			} else {
 				response := fmt.Sprintf("$%d\r\n%s\r\n", len(command[1]), command[1])
 				conn.Write([]byte(response))
+			}
+		case "SET":
+			if len(command) < 3 {
+				conn.Write([]byte("-ERR wrong number of arguments for 'set' command\r\n"))
+			} else {
+				key := command[1]
+				value := command[2]
+
+				mutex.Lock()
+				store[key] = value
+				mutex.Unlock()
+
+				conn.Write([]byte("+OK\r\n"))
+			}
+		case "GET":
+			if len(command) < 2 {
+				conn.Write([]byte("-ERR wrong number of arguments for 'get' command\r\n"))
+			} else {
+				key := command[1]
+
+				mutex.RLock()
+				value, exists := store[key]
+				mutex.RUnlock()
+
+				if exists {
+					response := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
+					conn.Write([]byte(response))
+				} else {
+					conn.Write([]byte("$-1\r\n"))
+				}
 			}
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
