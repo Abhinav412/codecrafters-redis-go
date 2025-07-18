@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Ensures gofmt doesn't remove the "net" and "os" imports in stage 1 (feel free to remove this!)
@@ -15,8 +16,9 @@ var _ = net.Listen
 var _ = os.Exit
 
 var (
-	store = make(map[string]string)
-	mutex = sync.RWMutex{}
+	store       = make(map[string]string)
+	expiryTimes = make(map[string]int64)
+	mutex       = sync.RWMutex{}
 )
 
 func main() {
@@ -70,8 +72,22 @@ func handleClient(conn net.Conn) {
 				key := command[1]
 				value := command[2]
 
+				var expiry int64 = 0
+				if len(command) > 4 && strings.ToUpper(command[3]) == "PX" {
+					ms, err := strconv.Atoi(command[4])
+					if err != nil {
+						conn.Write([]byte("-ERR PX value is not an integer\r\n"))
+						continue
+					}
+					expiry = time.Now().UnixMilli() + int64(ms)
+				}
 				mutex.Lock()
 				store[key] = value
+				if expiry > 0 {
+					expiryTimes[key] = expiry
+				} else {
+					delete(expiryTimes, key)
+				}
 				mutex.Unlock()
 
 				conn.Write([]byte("+OK\r\n"))
@@ -84,14 +100,25 @@ func handleClient(conn net.Conn) {
 
 				mutex.RLock()
 				value, exists := store[key]
+				expiry, hasExpiry := expiryTimes[key]
 				mutex.RUnlock()
 
-				if exists {
-					response := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
-					conn.Write([]byte(response))
-				} else {
+				if !exists {
 					conn.Write([]byte("$-1\r\n"))
+					continue
 				}
+
+				if hasExpiry && time.Now().UnixMilli() > expiry {
+					mutex.Lock()
+					delete(store, key)
+					delete(expiryTimes, key)
+					mutex.Unlock()
+
+					conn.Write([]byte("$-1\r\n"))
+					continue
+				}
+				response := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
+				conn.Write([]byte(response))
 			}
 		default:
 			conn.Write([]byte("-ERR unknown command\r\n"))
